@@ -108,6 +108,9 @@ Fnc_SetPowerCoef* SetPowerCoefO = nullptr;
 Fnc_SetCurrentVehicle* SetCurrentVehicleO = nullptr;
 
 Vehicle* GetCurrentVehicle() {
+	if (!TruckControlPtr) {
+		return nullptr;
+	}
 	combine_TRUCK_CONTROL* truckCtrl = *TruckControlPtr;
 	if (truckCtrl == nullptr) {
 		return nullptr;
@@ -164,9 +167,7 @@ void InitMemory() {
 	DetourTransactionCommit();
 
 	if (Vehicle* veh = GetCurrentVehicle()) {
-		IsInAuto[veh] = veh->TruckAction->IsInAutoMode;
-		veh->TruckAction->IsInAutoMode = false;
-		veh->ShiftToGear(1, 1.05);
+		Hooked_SetCurrentVehicle(*TruckControlPtr, veh);
 	}
 
 	LogMessage("init", base);
