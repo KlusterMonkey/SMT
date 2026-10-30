@@ -18,16 +18,20 @@ namespace {
 		if (preserveGear && gear >= -1 && gear <= veh->GetMaxGear()) {
 			ShiftGearO(veh, gear);
 		}
+		else if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+			ShiftGearO(veh, 1);
+		}
 	}
 }
 
 void ApplyShiftingOptions() {
 	if (auto veh = GetCurrentVehicle(); veh && (IsInAuto[veh] || veh->TruckAction->IsInAutoMode)) {
-		const bool manual = iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>() ||
+		const bool paddle = iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>();
+		const bool manual = paddle ||
 			iniConfig["OPTIONS"]["DISABLE GAME SHIFTING"].as<bool>() ||
 			iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>() ||
 			iniConfig["OPTIONS"]["REQUIRE CLUTCH"].as<bool>();
-		SelectAuto(veh, manual, true);
+		SelectAuto(veh, manual, !paddle || veh->TruckAction->Gear_1 > 0);
 	}
 }
 
@@ -145,6 +149,17 @@ std::int32_t Hooked_GetMaxGear(const Vehicle* veh) {
 	return GetMaxGearO(veh);
 }
 
+bool Hooked_IsGearRobot(Vehicle* veh) {
+	// Only forward gears use the A display; paddle N/R keep their native labels.
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>() && veh->TruckAction->Gear_2 > 0) {
+		const auto selectedAuto = IsInAuto.find(veh);
+		if (selectedAuto != IsInAuto.end() && selectedAuto->second) {
+			return true;
+		}
+	}
+	return IsGearRobotO(veh);
+}
+
 void Hooked_ShiftToAutoGear(Vehicle* veh) {
 	if (iniConfig["OPTIONS"]["DISABLE GAME SHIFTING"].as<bool>()) {
 		veh->TruckAction->IsInAutoMode = false;
@@ -216,7 +231,8 @@ void Hooked_SetCurrentVehicle(combine_TRUCK_CONTROL* truckCtrl, Vehicle* veh) {
 			IsInAuto[veh] = true;
 		}
 		if (IsInAuto[veh]) {
-			SelectAuto(veh, true, true);
+			const bool paddle = iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>();
+			SelectAuto(veh, true, !paddle || veh->TruckAction->Gear_1 > 0);
 		}
 		veh->TruckAction->IsInAutoMode = false;
 	}
