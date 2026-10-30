@@ -4,9 +4,32 @@
 #include "config.h"
 #include "input.h"
 
-std::atomic<float> currentCoef = 1.05f;
+std::atomic<float> currentCoef = 1.f;
 
 std::unordered_map <Vehicle*, std::atomic<bool>> IsInAuto{};
+
+namespace {
+	void SelectAuto(Vehicle* veh, bool manual, bool preserveGear) {
+		const auto gear = veh->TruckAction->Gear_1;
+		// Let the game initialize A's coefficients and choose its entry gear.
+		ShiftToAutoGearO(veh);
+		veh->TruckAction->IsInAutoMode = !manual;
+		IsInAuto[veh] = true;
+		if (preserveGear && gear >= -1 && gear <= veh->GetMaxGear()) {
+			ShiftGearO(veh, gear);
+		}
+	}
+}
+
+void ApplyShiftingOptions() {
+	if (auto veh = GetCurrentVehicle(); veh && (IsInAuto[veh] || veh->TruckAction->IsInAutoMode)) {
+		const bool manual = iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>() ||
+			iniConfig["OPTIONS"]["DISABLE GAME SHIFTING"].as<bool>() ||
+			iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>() ||
+			iniConfig["OPTIONS"]["REQUIRE CLUTCH"].as<bool>();
+		SelectAuto(veh, manual, true);
+	}
+}
 
 void Vehicle::SetPowerCoef(float coef) { Hooked_SetPowerCoef(this, coef); }
 
@@ -22,7 +45,14 @@ bool Vehicle::ShiftToGear(std::int32_t targetGear, float powerCoef) {
 		targetGear = GetMaxGear() + 1;
 	}
 
-	if (iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>()) {
+	const bool paddle = iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>();
+	if (paddle) {
+		if (!IsInAuto[this]) {
+			return false;
+		}
+		targetGear = std::clamp(targetGear, -1, GetMaxGear());
+	}
+	else if (iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>()) {
 		if (IsInAuto[this] == false) {
 			return true;
 		}
@@ -31,7 +61,7 @@ bool Vehicle::ShiftToGear(std::int32_t targetGear, float powerCoef) {
 
 	bool bSwitched = Hooked_ShiftGear(this, targetGear);
 
-	if (bSwitched) {
+	if (bSwitched && !paddle) {
 		SetPowerCoef(powerCoef);
 	}
 
@@ -55,7 +85,8 @@ bool Vehicle::ShiftToPrevGear() {
 		gear = -1;
 	}
 
-	if (iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>()) {
+	if (!iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>() &&
+		iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>()) {
 		gear = std::max(gear, 1);
 	}
 
@@ -63,28 +94,43 @@ bool Vehicle::ShiftToPrevGear() {
 }
 
 bool Vehicle::ShiftToHighGear() {
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+		return Hooked_ShiftToHigh(this);
+	}
 	IsInAuto[this] = true;
 	return ShiftToGear(99);
 }
 
 bool Vehicle::ShiftToReverseGear() {
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+		return Hooked_ShiftToReverse(this);
+	}
 	IsInAuto[this] = true;
 	return ShiftToGear(-1);
 }
 
 bool Vehicle::ShiftToLowGear() {
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+		return false;
+	}
 	IsInAuto[this] = false;
 	currentCoef = PowerCoefLowGear;
 	return ShiftToGear(1, PowerCoefLowGear);
 }
 
 bool Vehicle::ShiftToLowPlusGear() {
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+		return false;
+	}
 	IsInAuto[this] = false;
 	currentCoef = PowerCoefLowPlusGear;
 	return ShiftToGear(1, PowerCoefLowPlusGear);
 }
 
 bool Vehicle::ShiftToLowMinusGear() {
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+		return false;
+	}
 	IsInAuto[this] = false;
 	currentCoef = PowerCoefLowMinusGear;
 	return ShiftToGear(1, PowerCoefLowMinusGear);
@@ -100,23 +146,15 @@ std::int32_t Hooked_GetMaxGear(const Vehicle* veh) {
 }
 
 void Hooked_ShiftToAutoGear(Vehicle* veh) {
-	veh->TruckAction->IsInAutoMode = false;
-
 	if (iniConfig["OPTIONS"]["DISABLE GAME SHIFTING"].as<bool>()) {
+		veh->TruckAction->IsInAutoMode = false;
 		return;
 	}
 
-	IsInAuto[veh] = true;
-
-	if (veh->TruckAction->Gear_1 == (GetMaxGearO(veh) + 1)) {
-		veh->ShiftToGear(round(veh->GetMaxGear() * 0.8), 1.0f);
-	}
-	else if (veh->TruckAction->Gear_1 <= 1) {
-		veh->ShiftToGear(1, 1.05f);
-	}
-	if (!iniConfig["OPTIONS"]["REQUIRE CLUTCH"].as<bool>() && !iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>()) {
-		ShiftToAutoGearO(veh);
-	}
+	const bool paddle = iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>();
+	const bool manual = paddle || iniConfig["OPTIONS"]["REQUIRE CLUTCH"].as<bool>() ||
+		iniConfig["OPTIONS"]["IMMERSIVE MODE"].as<bool>();
+	SelectAuto(veh, manual, paddle && IsInAuto[veh]);
 }
 
 bool Hooked_ShiftToReverse(Vehicle* veh) {
@@ -124,6 +162,7 @@ bool Hooked_ShiftToReverse(Vehicle* veh) {
 		return false;
 	}
 
+	IsInAuto[veh] = false;
 	return ShiftToReverseO(veh);
 }
 
@@ -132,6 +171,7 @@ bool Hooked_ShiftToNeutral(Vehicle* veh) {
 		return false;
 	}
 
+	IsInAuto[veh] = false;
 	return ShiftToNeutralO(veh);
 }
 
@@ -140,6 +180,7 @@ bool Hooked_ShiftToHigh(Vehicle* veh) {
 		return false;
 	}
 
+	IsInAuto[veh] = false;
 	return ShiftToHighO(veh);
 }
 
@@ -148,17 +189,18 @@ bool Hooked_DisableAutoAndShift(Vehicle* veh, std::int32_t gear) {
 		return false;
 	}
 
-	bool result = DisableAutoAndShiftO(veh, gear);
+	// A native range selection can keep the same numbered gear (A1 -> L).
 	IsInAuto[veh] = false;
-	return result;
+	return DisableAutoAndShiftO(veh, gear);
 }
 
 void Hooked_SetPowerCoef(Vehicle* veh, float coef) {
+	if (iniConfig["OPTIONS"]["PADDLE SHIFT MODE"].as<bool>()) {
+		SetPowerCoefO(veh, coef);
+		return;
+	}
 	if (iniConfig["OPTIONS"]["DISABLE GAME SHIFTING"].as<bool>()) {
 		coef = currentCoef;
-	}
-	if (IsInAuto[veh]) {
-		coef = 1.05;
 	}
 	SetPowerCoefO(veh, coef);
 	ShiftGearO(veh, veh->TruckAction->Gear_2);
@@ -166,12 +208,16 @@ void Hooked_SetPowerCoef(Vehicle* veh, float coef) {
 
 void Hooked_SetCurrentVehicle(combine_TRUCK_CONTROL* truckCtrl, Vehicle* veh) {
 	range = 0;
+	SetCurrentVehicleO(truckCtrl, veh);
 	if (veh) {
-		IsInAuto[veh] = veh->TruckAction->IsInAutoMode;
+		// A can remain selected even when the engine's automatic mode is off.
+		IsInAuto.try_emplace(veh, veh->TruckAction->IsInAutoMode);
+		if (veh->TruckAction->IsInAutoMode) {
+			IsInAuto[veh] = true;
+		}
 		if (IsInAuto[veh]) {
-			veh->ShiftToGear(1, 1.05);
+			SelectAuto(veh, true, true);
 		}
 		veh->TruckAction->IsInAutoMode = false;
 	}
-	SetCurrentVehicleO(truckCtrl, veh);
 }
